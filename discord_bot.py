@@ -6,6 +6,7 @@ from discord.ext import commands
 import yt_dlp
 from collections import deque
 import asyncio
+import re
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -78,30 +79,76 @@ async def play(ctx, *, query):
     await join(ctx)
     if not ctx.voice_client:
         return
-
-    song_info = get_song_info(query)
-    if query is None:
+    
+    q = get_queue(ctx.guild.id)
+    result = get_song_info(query)
+    if result is None:
         await ctx.send(f"Cannot find the song.")
         return
-
     title, url = result
-    source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTS)
-    voice_client.play(source)
+    q.appendleft(result)
+    
+    if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
+        ctx.voice_client.stop()
 
+    await play_next(ctx)
+
+async def play_next(ctx):
+    q = get_queue(ctx.guild.id)
+    #If queue is empty, do nothing
+    if not q:
+        ctx.send(f"""
+                 No more song to play.
+                 """)
+        return
+    
+    title, url = q[0]
+    source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTS)
+
+    def after_playing(error):
+        if error:
+            ctx.send(f"Error: {error}")
+        if q and q[0] == (title, url):
+            q.popleft()
+        asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+
+    ctx.voice_client.play(source, after=after_playing)
     await ctx.send(f"""
                    Now playing: {title}
-                   from: {url}
                    """)
+
+
+
 
 
 @bot.command(name="queue")
 async def queue(ctx, *, query):
-    return
+    q = get_queue(ctx.guild.id)
+    try:
+        #Can be shorter
+        song = get_song_info(query)
+        title, url = song
+        q.append((title, url))
 
-@bot.command(name="clear")
+        await ctx.send(f"""
+                       Queued: {title}
+                       """)
+    except Exception as e:
+        ctx.send(f"Error: {e}")
+
+@bot.command(name="clear", aliases=["clear_queue", "cq"])
 async def clear_queue(ctx):
-    return
-    
+    if queues[ctx.guild.id]:
+        queues[ctx.guild.id].clear()
+
+@bot.command(name="skip")    
+async def skip(ctx):
+    q = get_queue(ctx.guild.id)
+    ctx.voice_client.stop()
+    if not q:
+        q.popleft()
+    await play_next(ctx)
+
 
 
 @bot.command(name="dc", aliases=["disconnect", "DC"])
